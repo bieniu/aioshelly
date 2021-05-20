@@ -27,16 +27,21 @@ class WebSocketShelly:
     async def initialize(self, device_ip: str):
         """Initialize the COAP manager."""
         ws = await self.ws_init(device_ip)
-        reply = await self.ws_send(ws, "Shelly.GetDeviceInfo", 1)
+        reply = await self.ws_send(ws, 1, "Shelly.GetDeviceInfo")
         _LOGGER.info("Device info: %s", reply)
-        reply = await self.ws_send(ws, "Shelly.GetStatus", 2)
-        x = json.loads(reply)["result"]
-        for k in x.keys():
+        reply = await self.ws_send(ws, 2, "Shelly.GetStatus")
+        result = json.loads(reply)["result"]
+        for k in result.keys():
             if k.startswith("switch:"):
                 self.switches[k] = {}
-        await self.ws_parse_switch(x)
-        v = await self.ws_event_handler(ws)
-        if not v:
+        await self.ws_parse_switch(result)
+        
+        param_tmp = {}
+        param_tmp["id"] = 1
+        param_tmp["on"] = True
+        reply = await self.ws_send(ws, 3, "Switch.Set", param_tmp)
+        _LOGGER.info(reply)
+        if await self.ws_event_handler(ws):
             await self.initialize(device_ip)
 
     async def ws_parse_switch(self, json_reply):
@@ -50,9 +55,9 @@ class WebSocketShelly:
     async def ws_event_handler(self, websocket):
         try:
             async for message in websocket:
-                x = json.loads(message)["params"]
-                _LOGGER.info("Received event params: %s", x)
-                await self.ws_parse_switch(x)
+                params = json.loads(message)["params"]
+                _LOGGER.info("Received event params: %s", params)
+                await self.ws_parse_switch(params)
         except Exception as ex:
             _LOGGER.warning("Error on WS: %s, reinit", ex.code)
             return False
@@ -60,16 +65,14 @@ class WebSocketShelly:
     async def ws_init(self, ip_dst):
         return await websockets.connect(f"ws://{ip_dst}/rpc")
 
-    async def ws_send(self, ws, method, counter):
-        msg = (
-            '{"id": '
-            + str(counter)
-            + ', "src": "'
-            + IDENT
-            + '", "method": "'
-            + method
-            + '"}'
-        )
+    async def ws_send(self, ws, counter, method, params = None):
+        msg_tmp = {}
+        msg_tmp['id']= counter
+        msg_tmp['src']= IDENT
+        msg_tmp['method']= method
+        if params:
+            msg_tmp["params"] = params
+        msg = json.dumps(msg_tmp)
         _LOGGER.info("Sending request: %s", msg)
         await ws.send(msg)
         return await ws.recv()
