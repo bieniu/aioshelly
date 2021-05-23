@@ -1,8 +1,8 @@
+"""WsRpc for Shelly."""
 from __future__ import annotations
 
 import asyncio
 import logging
-import sys
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
@@ -24,6 +24,7 @@ class JSONRPCError(RPCError):
     """Raised during RPC JSON parsing errors."""
 
     def __init__(self, code: int, message: str = ""):
+        """Initialize JSON RPC errors."""
         self.code = code
         self.message = message
         super().__init__(code, message)
@@ -31,6 +32,8 @@ class JSONRPCError(RPCError):
 
 @dataclass
 class RPCCall:
+    """RPCCall class."""
+
     id: int
     method: str
     params: Any  # None or JSON-serializable
@@ -41,22 +44,26 @@ class RPCCall:
 
     @property
     def request_frame(self):
+        """Request frame."""
         msg = {
             "id": self.id,
             "method": self.method,
             "src": self.src,
         }
-        for o in ("params", "dst"):
-            if getattr(self, o) is not None:
-                msg[o] = getattr(self, o)
+        for obj in ("params", "dst"):
+            if getattr(self, obj) is not None:
+                msg[obj] = getattr(self, obj)
         return msg
 
 
 class WsRPC:
+    """WsRPC class."""
+
     def __init__(self, addr):
+        """Initialize WsRPC class."""
         self.addr = addr
         self.rx_task = None
-        self.ws = None
+        self.websocket = None
         self.handlers = {}
         self.calls = {}
         self._call_id = 1
@@ -69,48 +76,51 @@ class WsRPC:
         return self._call_id
 
     # TODO: implement async iterator for notifications?
-    def on_notification(self, method, params):
-        _LOGGER.debug(f"Notification: {method} {params}")
+    async def on_notification(self, method, params):
+        """Receive notification event."""
+        _LOGGER.debug("Notification: %s %s", method, params)
 
     async def connect(self, aiohttp_session):
-        if self.ws:
+        """Connect to device."""
+        if self.websocket:
             return  # already connected
 
-        self.ws = await aiohttp_session.ws_connect(f"http://{self.addr}/rpc")
+        self.websocket = await aiohttp_session.ws_connect(f"http://{self.addr}/rpc")
         asyncio.create_task(self._recv())
 
-        _LOGGER.info(f"Connected to {self.addr}")
+        _LOGGER.info("Connected to %s", self.addr)
 
     async def disconnect(self):
-        if self.ws is None:
+        """Disconnect all sessions."""
+        if self.websocket is None:
             return
-        ws, self.ws = self.ws, None
-        await ws.close()
-        for i, c in self.calls.items():
-            c.future.cancel()
+        websocket, self.websocket = self.websocket, None
+        await websocket.close()
+        for call_item in self.calls.items():
+            call_item.future.cancel()
         self.calls = {}
 
     async def _handle_call(self, frame):
         meth = frame["method"]
         if meth not in self.handlers:
-            _LOGGER.debug(f"Peer tried to invoke {meth}")
-            self.ws.send_json(
+            _LOGGER.debug("Peer tried to invoke %s", meth)
+            self.websocket.send_json(
                 {"id": frame["id"], "error": 400, "message": f"No handler for {meth}"}
             )
             return
 
         try:
             resp = await self.handlers[meth](frame.get("params", None))
-        except JSONRPCError as je:
-            self.ws.send_json(
+        except JSONRPCError as jsonerr:
+            self.websocket.send_json(
                 {
                     "id": frame["id"],
                     "src": self.src,
-                    "error": {"code": je.code, "message": je.message},
+                    "error": {"code": jsonerr.code, "message": jsonerr.message},
                 }
             )
         except Exception as exc:
-            self.ws.send_json(
+            self.websocket.send_json(
                 {
                     "id": frame["id"],
                     "src": self.src,
@@ -118,20 +128,20 @@ class WsRPC:
                 }
             )
         else:
-            self.ws.send_json({"id": frame["id"], "result": resp})
+            self.websocket.send_json({"id": frame["id"], "result": resp})
 
     async def _recv(self):
-        async for msg in self.ws:
-            _LOGGER.debug(f"recv {msg.type}: {msg.data}")
+        async for msg in self.websocket:
+            _LOGGER.debug("recv %s: %s", msg.type, msg.data)
             if msg.type in (aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.ERROR):
-                _LOGGER.warning(f"{self} disconnected")
-                self.ws = None
+                _LOGGER.warning("%s disconnected", self)
+                self.websocket = None
                 return
 
             frame = msg.json()
             if peer_src := frame.get("src", None):
                 if self.dst is not None and peer_src != self.dst:
-                    _LOGGER.warning(f"Remote src changed: {self.dst} -> {peer_src}")
+                    _LOGGER.warning("Remote src changed: %s -> %s", self.dst, peer_src)
                 self.dst = peer_src
 
             if meth := frame.get("method", None):
@@ -147,40 +157,42 @@ class WsRPC:
             elif id_ := frame.get("id", None):
                 # looks like a response
                 if id_ not in self.calls:
-                    _LOGGER.warning(f"Response for an unknown request id: {id_}")
+                    _LOGGER.warning("Response for an unknown request id: %s", id_)
                     continue
                 call = self.calls.pop(id_)
                 call.resolve.set_result(frame)
 
             else:
-                _LOGGER.warning(f"invalid frame: {frame}")
+                _LOGGER.warning("invalid frame: %s", frame)
 
     @property
     def connected(self):
-        # XXX: this is quite naive, ws may be in limbo
-        return self.ws is not None
+        """Return connected state."""
+        # TODO: this is quite naive, ws may be in limbo
+        return self.websocket is not None
 
     async def call(self, method, params=None, timeout=10):
+        """Websocket RPC call."""
         call = RPCCall(self._next_id, method, params)
         call.resolve = asyncio.Future()
         call.src = self.src
         call.dst = self.dst
 
         self.calls[call.id] = call
-        await self.ws.send_json(call.request_frame)
+        await self.websocket.send_json(call.request_frame)
         call.sent_at = datetime.utcnow()
 
         try:
             resp = await asyncio.wait_for(call.resolve, timeout)
         except asyncio.TimeoutError as exc:
-            _LOGGER.warning(f"{call} timed out: {exc}")
-            raise RPCTimeout(call)
+            _LOGGER.warning("%s timed out: %s", call, exc)
+            raise RPCTimeout(call) from exc
         except Exception as exc:
-            _LOGGER.error(f"{call} ???: {exc}")
-            raise RPCError(call, exc)
+            _LOGGER.error("%s ???: %s", call, exc)
+            raise RPCError(call, exc) from exc
 
         if "result" in resp:
-            _LOGGER.debug(f"{call.method}({call.params or ''}) -> {resp['result']}")
+            _LOGGER.debug("%s(%s) -> %s", call.method, call.params, resp["result"])
             return resp["result"]
 
         try:
