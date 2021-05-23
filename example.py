@@ -152,6 +152,7 @@ def get_arguments() -> argparse.Namespace:
     )
     parser.add_argument("--username", "-u", type=str, help="Set device username")
     parser.add_argument("--password", "-p", type=str, help="Set device password")
+    parser.add_argument("--gen", "-g", type=int, default=1, help="Device generation")
 
     arguments = parser.parse_args()
 
@@ -161,16 +162,34 @@ def get_arguments() -> argparse.Namespace:
 async def main() -> None:
     """Run main."""
     parser, args = get_arguments()
-    if args.devices:
-        await test_devices(args.init, args.timeout)
-    elif args.ip_address:
-        if args.username and args.password is None:
-            parser.error("--username and --password must be used together")
-        await test_single(
-            args.ip_address, args.username, args.password, args.init, args.timeout
-        )
+
+    if args.gen == 1:  # COAP
+        if args.devices:
+            await test_devices(args.init, args.timeout)
+        elif args.ip_address:
+            if args.username and args.password is None:
+                parser.error("--username and --password must be used together")
+            await test_single(
+                args.ip_address, args.username, args.password, args.init, args.timeout
+            )
+        else:
+            parser.error("--ip_address or --devices must be specified")
+    elif args.gen == 2:  # WS
+        async with aiohttp.ClientSession() as session:
+            shelly = aioshelly.WsRPC(args.ip_address)
+            await shelly.connect(session)
+            result = await shelly.call("Shelly.GetDeviceInfo")
+            print(result)
+            result = await shelly.call("Shelly.GetStatus")
+            print(result)
+            while True:
+                await asyncio.sleep(10)
+                await shelly.call("Shelly.GetStatus")
+                print(result)
     else:
-        parser.error("--ip_address or --devices must be specified")
+        print()
+        print("Unknown device generation specified")
+        print()
 
 
 if __name__ == "__main__":

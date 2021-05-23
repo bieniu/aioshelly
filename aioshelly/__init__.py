@@ -11,6 +11,7 @@ import aiohttp
 import async_timeout
 
 from .coap import COAP
+from .wsrpc import WsRPC
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -374,7 +375,7 @@ class Device:
 
     @property
     def settings(self):
-        """Device get settings (HTTP)."""
+        """Get device settings (HTTP)."""
         if not self._initialized:
             raise NotInitialized
 

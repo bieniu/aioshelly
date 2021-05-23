@@ -140,10 +140,3 @@ async def discovery_dump():
     async with COAP(lambda msg: print(msg.ip, msg.payload)):
         while True:
             await asyncio.sleep(0.1)
-
-
-if __name__ == "__main__":
-    try:
-        asyncio.run(discovery_dump())
-    except KeyboardInterrupt:
-        pass

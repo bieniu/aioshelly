@@ -72,11 +72,11 @@ class WsRPC:
     def on_notification(self, method, params):
         _LOGGER.debug(f"Notification: {method} {params}")
 
-    async def connect(self, aiohttp_serssion):
+    async def connect(self, aiohttp_session):
         if self.ws:
             return  # already connected
 
-        self.ws = await aiohttp_serssion.ws_connect(f"http://{self.addr}/rpc")
+        self.ws = await aiohttp_session.ws_connect(f"http://{self.addr}/rpc")
         asyncio.create_task(self._recv())
 
         _LOGGER.info(f"Connected to {self.addr}")
@@ -188,22 +188,3 @@ class WsRPC:
             raise JSONRPCError(code, msg)
         except KeyError as err:
             raise RPCError(f"bad response: {resp}") from err
-
-
-async def main():
-    logging.basicConfig(level=logging.DEBUG, format="%(asctime)-15s %(message)s")
-    async with aiohttp.ClientSession() as session:
-        shelly = WsRPC(sys.argv[1])
-        await shelly.connect(session)
-        await shelly.call("Shelly.GetDeviceInfo")
-        await shelly.call("Shelly.GetStatus")
-        while True:
-            await asyncio.sleep(10)
-            await shelly.call("Shelly.GetStatus")
-
-
-if __name__ == "__main__":
-    try:
-        asyncio.run(main())
-    except KeyboardInterrupt:
-        pass
